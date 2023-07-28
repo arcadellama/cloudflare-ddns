@@ -157,11 +157,12 @@ main() {
     if public_ip=$(http_req \
       --request GET \
       --url "$_public_api"); then
+      info "Public IP $public_ip found via $_public_api"
       break
     else
-      public_ip=""
-      err "Unable to get public ip address from $_public_api."
+      err "Unable to get public ip address from $_public_api"
       info "$public_ip"
+      public_ip=""
     fi
   done
 
