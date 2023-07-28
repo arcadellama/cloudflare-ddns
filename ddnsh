@@ -45,8 +45,14 @@ JQ_BIN='jq'
 
 usage() {
   cat << EOF
-Usage:
-  $PRGNAM [-v] [-F config] domains
+usage: $PRGNAM [-hv] [-F config] [-i address] domains
+
+Options:
+  -F  conffile    Read configuration options from conffile
+                  (default: \$HOME/.config/$PRGNAM.conf)   
+  -h              Show this screen.
+  -i  address     Manually specify the IP address to update.        
+  -v              Verbose mode.
 
 EOF
   exit 0
@@ -115,6 +121,7 @@ main() {
     case "$1" in
       -v) VERBOSE=1 ; shift ;;
       -h) usage ;;
+      -i) public_ip="$2" ; shift 2 ;;
       -F) if [ -r "$2" ]; then CONFIG="$2"; shift 2; else usage; fi ;;
       -?) usage ;;
        *) domains="${domains:-} $1"; shift ;;
@@ -153,18 +160,20 @@ main() {
   fi
   
   # Get public ip
-  for _public_api in $PUBLIC_API_URL; do
-    if public_ip=$(http_req \
-      --request GET \
-      --url "$_public_api"); then
-      info "Public IP $public_ip found via $_public_api"
-      break
-    else
-      err "Unable to get public ip address from $_public_api"
-      info "$public_ip"
-      public_ip=""
-    fi
-  done
+  if [ -z "$public_ip" ]; then
+    for _public_api in $PUBLIC_API_URL; do
+      if public_ip=$(http_req \
+        --request GET \
+        --url "$_public_api"); then
+        info "Public IP $public_ip found via $_public_api"
+        break
+      else
+        err "Unable to get public ip address from $_public_api"
+        info "$public_ip"
+        public_ip=""
+      fi
+    done
+  fi
 
   if [ -z "$public_ip" ]; then
     die "Unable to get public ip address."
@@ -211,7 +220,6 @@ main() {
     while [ "$_zcount" -gt 0 ]; do
       _zname=$(out "$zones" | parse_json .result["$((_zcount-1))"].name)
       if [ "$_domain" = "$_zname" ]; then
-        info "Domain zone found for $_domain"
         _zone_id=$(out "$zones" | parse_json .result["$((_zcount-1))"].id)
         if [ "$_zone_id" = "null" ]; then
           err "Error parsing zone json"
@@ -257,7 +265,6 @@ main() {
         parse_json .result["$((_dcount-1))"].name)
       
       if [ "$_domain" = "$_dname" ]; then
-        info "DNS record found for $_domain"
         _dns_id=$(out "$_dns_records" | \
           parse_json .result["$((_dcount-1))"].id)
 
