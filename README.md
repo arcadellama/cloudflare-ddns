@@ -1,2 +1,3 @@
 #ddn.sh
-Posix shell script to dynamically update the DNS with Cloudflare.
+
+A posix shell script to dynamically update the DNS with Cloudflare.
