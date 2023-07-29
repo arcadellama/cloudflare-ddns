@@ -22,38 +22,66 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+## PROGRAM CONSANTS ##
 PRGNAM=$(basename "$0")
-VERBOSE="${VERBOSE:-0}"
-CONFIG="${CONFIG:-}"
+VERSION='0.0.42'
 
-CONFIG_FILE_LOCATIONS="$PWD/$PRGNAM.conf
+## CONFIGURATION LOCATIONS ##
+CONFIG="${CONFIG:-}"
+CONFIG_FILE_LOCATIONS="
+$PWD/$PRGNAM.conf
 ${XDG_CONFIG_HOME:=$HOME/.config}/$PRGNAM.conf
 $HOME/$PRGNAM.conf
 $HOME/.$PRGNAM.conf"
 
+## CONFIGURATION VARIABLES ##
+VERBOSE="${VERBOSE:-0}"
+CF_API_KEY=""
+CF_API_URL="https://api.cloudflare.com/client/v4"
 PUBLIC_API_URL="https://ifconfig.me/ip
 https://api.ipify.org
 https://api.seeip.org"
 
-# Cloudflare API variables
-CF_API_KEY=""
-CF_API_URL="https://api.cloudflare.com/client/v4"
-
-# External dependencies
+## DEPENDENCIES ##
 CURL_BIN='curl'
 JQ_BIN='jq'
 
+## FUNCTIONS ##
 usage() {
   cat << EOF
+$PRGNAM -- Version: $VERSION
 usage: $PRGNAM [-hv] [-F config] [-i address] domains
 
 Options:
+
   -F  conffile    Read configuration options from conffile
                   (default: \$HOME/.config/$PRGNAM.conf)   
   -h              Show this screen.
   -i  address     Manually specify the IP address to update.        
   -v              Verbose mode.
 
+Configuration Variables:
+
+  CF_API_KEY      Cloudflare API Key for Zone
+                  (required)
+  CF_API_URL      Cloudflare API URL
+                  (optional)
+  CURL_BIN        Path to curl
+                  (optional)
+  JQ_BIN          Path to jq
+                  (optional)
+  PUBLIC_API_URL  API to get public IP address
+                  (optional)
+  VERBOSE         Verbosity: 0 or 1
+                  (optional)
+
+Configuration Locations (in order of priority):
+  ./$PRGNAM.conf
+  \$XDG_CONFIG_HOME/$PRGNAM.conf
+  \$HOME/.config/$PRGNAM.conf
+  \$HOME/$PRGNAM.conf
+  \$HOME/.$PRGNAM.conf
+  
 EOF
   exit 0
 }
@@ -209,6 +237,7 @@ main() {
     _dns_ip=""
     
     # Parse Zone data to check if domain exists
+    # Get Zone Count
     _zcount=$(out "$zones" | parse_json .result_info.count);
     if [ "$_zcount" = "null" ]; then
       err "Error parsing Zone json"
@@ -216,7 +245,7 @@ main() {
       continue
     fi
 
-    # Loop through Zones to find matching domain
+    # Loop through Zones to find matching ZONE ID
     while [ "$_zcount" -gt 0 ]; do
       _zname=$(out "$zones" | parse_json .result["$((_zcount-1))"].name)
       if [ "$_domain" = "$_zname" ]; then
@@ -239,7 +268,7 @@ main() {
       continue
     fi
 
-    # Get dns record json
+    # Get DNS record JSON
     if ! _dns_records=$(http_req \
       --request GET \
       --url "$CF_API_URL/zones/$_zone_id/dns_records" \
@@ -251,7 +280,8 @@ main() {
       continue
     fi
 
-    # Parse json for ip address
+    # Parse DNS Records
+    # Get record count
     _dcount=$(out "$_dns_records" | parse_json .result_info.count)
     if [ "$_dcount" = "null" ]; then
       err "Error parsing DNS record json."
