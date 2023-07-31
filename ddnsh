@@ -22,40 +22,42 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
+LC_ALL=C
+
 ## PROGRAM CONSANTS ##
-PRGNAM=$(basename "$0")
+PRGNAM='ddnsh'
 VERSION='0.0.42'
 
 ## CONFIGURATION LOCATIONS ##
-VERBOSE="${VERBOSE:-0}"
 CONFFILE="${CONFFILE:-}"
 CONFIG_FILE_LOCATIONS="
 $PWD/$PRGNAM.conf
-${XDG_CONFIG_HOME:=$HOME/.config}/$PRGNAM.conf
+$PWD/.$PRGNAM.conf
 $HOME/$PRGNAM.conf
-$HOME/.$PRGNAM.conf"
+$HOME/.$PRGNAM.conf
+$HOME/.config/$PRGNAM.conf
+$HOEM/.local/etc/$PRGNAM.conf
+/usr/local/etc/$PRGNAM.conf
+/etc/$PRGNAM.conf"
 
 ## CONFIGURATION VARIABLES ##
 CF_API_KEY="${CF_API_KEY:-}"
 CF_API_URL="${CF_API_URL:-https://api.cloudflare.com/client/v4}"
 CF_API_ZONE="${CF_API_ZONE:-}"
 CF_DOMAINS="${CF_DOMAINS:-}"
-CF_ZONE_ID="${CF_ZONE_ID:-}"
 PUBLIC_IP_ADDRESS="${PUBLIC_IP_ADDRESS:-}"
 PUBLIC_IP_V4="${PUBLIC_IP_V4:-}"
 PUBLIC_IP_V6="${PUBLIC_IP_V6:-}"
-
-PUBLIC_API_URL=""
-
+PUBLIC_API_URL="${PUBLIC_API_URL:-}"
 PUBLIC_IP_LIST_V4="
 https://ipv4.seeip.org
 https://api4.ipify.org
 https://ipv4.icanhazip.com"
-
 PUBLIC_IP_LIST_V6="
 https://ipv6.seeip.org
 https://api6.ipify.org
 https://ipv6.icanhazip.com"
+VERBOSE="${VERBOSE:-0}"
 
 ## DEPENDENCIES ##
 CURL_BIN="${CURL_BIN:-$(command -v curl)}" || die "curl not found in PATH"
@@ -68,7 +70,12 @@ usage() {
 $PRGNAM -- Version: $VERSION
 
 USAGE
-$PRGNAM [-46hqvV] [-F config] [-f address] [-k key] [-z zone] domains
+$PRGNAM [-46hqvV] [-F config] [-f address] [-k key] [-z zone] COMMAND domains
+
+COMMANDS
+    check           Check if domain(s) match public IP address
+    help            This message
+    update          Update domain(s) to match public IP address
 
 OPTIONS
     -4              IPv4 Public Address (default)
@@ -87,19 +94,17 @@ OPTIONS
 CONFIGURATION VARIABLES
 
   CF_API_KEY        Cloudflare API Key for Zone
-                    (required)
-  CF_API_URL        Cloudflare API URL
+  CF_API_ZONE       Pre-defined Cloudflare DNS Zone
   CF_DOMAINS        Domain(s) to update
   PUBLIC_API_URL    API to get public IP address
   VERBOSE           Verbosity: 0 or 1
-  CF_API_ZONE       Pre-defined Cloudflare DNS Zone
 
 CONFIGURATION LOCATIONS
   ./$PRGNAM.conf
-  \$XDG_CONFIG_HOME/$PRGNAM.conf
-  \$HOME/.config/$PRGNAM.conf
   \$HOME/$PRGNAM.conf
   \$HOME/.$PRGNAM.conf
+  \$HOME/.config/$PRGNAM.conf
+  \$HOME/.local/etc/$PRGNAM.conf
   /usr/local/etc/$PRGNAM.conf
   /usr/etc/$PRGNAM.conf
   
@@ -132,12 +137,40 @@ err() {
 
 errinf() {
   if [ "$VERBOSE" -gt 0 ]; then
-    >&2 printf "ERROR DETAILS:\n%s" "$*"
+    >&2 out "ERROR: $*"
   fi
 }
 
 die() {
   err "$*" ; exit 1
+}
+
+get_cf_zone_json() {
+  # Returns: Cloudflare Zones JSON
+  if ! _zone_res=$(http_req \
+    --request GET \
+    --url "$CF_API_URL/zones" \
+    --header "Content-Type: application/json" \
+    --header "Authorization: Bearer $CF_API_KEY"); then
+    out "$_zone_res"
+    return 1
+  fi
+  out "$_zone_res"
+}
+
+get_cf_zone_id() {
+  # Accepts: Zone JSON
+  # Returns: Zone ID matching CF_API_ZONE
+  if ! _zone_id=$(out "$1" | \
+    parse_json \
+    '.result[] | select(.name == "'"$CF_API_ZONE"'") | .id' 2>&1); then
+    out "$_zone_id"
+    return 1
+  elif [ "$_zone_id" = "null" ]; then
+    out "$_zone_id"
+    return 1
+  fi
+  out "$_zone_id"
 }
 
 get_config_file() {
@@ -147,6 +180,24 @@ get_config_file() {
       return
     fi
   done
+  return 1
+}
+
+get_public_ip() {
+  # Returns: Public IP Address
+  for _public_api in $PUBLIC_API_URL; do
+    _addr=""
+    if _addr=$(http_req \
+      --request GET \
+      --url "$_public_api"); then
+      inf "Public IP $_addr found at $_public_api"
+      out "$_addr"
+      return 
+    else
+      errinf "Unable to get public ip address from $_public_api"
+    fi
+  done
+  out "Failed to get public IP address. Check connection."
   return 1
 }
 
@@ -176,12 +227,11 @@ parse_conf() {
   while read -r _line; do
     case "$_line" in
       \#*) continue ;;
-             CF_DOMAINS=*) CF_DOMAINS=${CF_DOMAINS:=${_line#*=}} ;;
-             CF_API_KEY=*) CF_API_KEY=${CF_API_KEY:=${_line#*=}} ;;
-             CF_API_URL=*) CF_API_URL=${CF_API_URL:=${_line#*=}} ;;
-            CF_API_ZONE=*) CF_API_ZONE=${CF_API_ZONE:=${_line#*=}} ;;
-         PUBLIC_API_URL=*) PUBLIC_API_URL=${PUBLIC_API_URL:=${_line#*=}} ;;
-      PUBLIC_IP_ADDRESS=*) PUBLIC_IP_ADDRESS=${PUBLIC_IP_ADDRESS:=${_line#*=}} ;;
+             CF_DOMAINS=*) CF_DOMAINS=${CF_DOMAINS:=${_line#*=}}          ;;
+             CF_API_KEY=*) CF_API_KEY=${CF_API_KEY:=${_line#*=}}          ;;
+             CF_API_URL=*) CF_API_URL=${CF_API_URL:=${_line#*=}}          ;;
+            CF_API_ZONE=*) CF_API_ZONE=${CF_API_ZONE:=${_line#*=}}        ;;
+         PUBLIC_API_URL=*) PUBLIC_API_URL=${PUBLIC_API_URL:=${_line#*=}}  ;;
     esac
   done < "$1"
 }
@@ -190,40 +240,150 @@ parse_json() {
   "$JQ_BIN" -r "$@"
 }
 
+cmd_check() {
+  cmd_update --check-only
+}
+
+cmd_update() {
+  _check_only=""
+  case "$1" in --check-only) _check_only=1 ;; esac
+  # Get Zone JSON
+  if ! _cf_zone_json=$(get_cf_zone_json); then
+    err "API Error getting Cloudflare Zones"
+    errinf "$_cf_zone_json"
+    return 1
+  fi
+
+  # Get Zone ID matching CF_API_ZONE
+  if ! CF_ZONE_ID="$(get_cf_zone_id "$_cf_zone_json")"; then
+    err "No matching Zone ID for $CF_API_ZONE"
+    errinf "$CF_ZONE_ID"
+    return 1
+  fi
+
+  if [ -z "$CF_ZONE_ID" ]; then
+    die "Unable to get Zone ID for $CF_API_ZONE"
+  fi
+
+  # Check for domains in Zone ID and update records as needed
+  _retval=0
+  _domain=""
+  for _domain in $CF_DOMAINS; do
+    # Get DNS record JSON
+    _dns_records=""
+    if ! _dns_records=$(http_req \
+      --request GET \
+      --url "$CF_API_URL/zones/$CF_ZONE_ID/dns_records" \
+      --header "Content-Type: application/json" \
+      --header "Authorization: Bearer $CF_API_KEY"); then
+      err "Unable to get DNS records"
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    # Parse DNS Records for domain ID
+    _dns_id=""
+    if ! _dns_id=$(out "$_dns_records" | \
+      parse_json \
+      '.result[] | select(.name == "'"$_domain"'") | .id' 2>&1); then
+      err "Cannot parse DNS JSON."
+      errinf "$_dns_id"
+      _retval=$((_retval+1))
+      continue
+    elif [ "$_dns_id" = "null" ]; then
+      err "Cannot get DNS ID from DNS Records JSON."
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    if [ -z "$_dns_id" ]; then
+      err "Cannot get DNS ID for $_domain"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    inf "DNS ID for $_domain: $_dns_id"
+
+    # Parse DNS records for domain IP address
+    _dns_ip=""
+    if ! _dns_ip=$(out "$_dns_records" | \
+      parse_json \
+      '.result[] | select(.id == "'"$_dns_id"'") | .content') 2>&1; then
+      err "Cannot get IP address from DNS JSON."
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    elif [ "$_dns_ip" = "null" ]; then
+      err "Cannot get DNS IP address from DNS Records JSON."
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    if [ -z "$_dns_ip" ]; then
+      err "Unable to get DNS IP Address for $_domain"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    inf "DNS IP for $_domain: $_dns_ip"
+
+    # Check dns ip with public ip
+    if [ "$PUBLIC_IP_ADDRESS" = "$_dns_ip" ]; then
+
+      if [ -n "$_check_only" ]; then
+        log "$_domain is already set to $PUBLIC_IP_ADDRESS."
+      else
+        inf "$_domain is already set to $PUBLIC_IP_ADDRESS."
+      fi
+      continue
+
+    elif [ -n "$_check_only" ]; then
+      log "$_domain ($_dns_ip) is not set to public ip ($PUBLIC_IP_ADDRESS)"
+      continue
+    fi
+
+    # Update dns ip
+    _update_dns_ip=""
+    if ! _update_dns_ip=$(http_req \
+      --request PATCH \
+      --url "$CF_API_URL/zones/$CF_ZONE_ID/dns_records/$_dns_id" \
+      --header "Content-Type: application/json" \
+      --header "Authorization: Bearer $CF_API_KEY" \
+      --data '{"content": "'"$PUBLIC_IP_ADDRESS"'"}'); then
+      err "Unable to patch $_domain with public ip $PUBLIC_IP_ADDRESS."
+      errinf "$_update_dns_ip"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    log "$_domain updated from $_dns_ip to $PUBLIC_IP_ADDRESS"
+
+  done
+  return "$_retval"
+}
+
 parse_opts() {
   while getopts :46hqvV _opts; do
     case "$_opts" in
-      4) PUBLIC_IP_V4=1 ;;
-      6) PUBLIC_IP_V6=1 ;;
-      h)
-        usage
-        ;;
-
-      q)
-        if [ "$VERBOSE" -eq 1 ]; then
-          err "Cannot choose both 'q' and 'v'"
-          usage 1
-        fi
-        VERBOSE=-1
-        ;;
-
-      v)  
-        if [ "$VERBOSE" -eq -1 ]; then
-          VERBOSE=1
-          err "Cannot choose both 'v' and 'q'"
-          usage 1
-        fi
-        VERBOSE=1
-        ;;
-      V)
-        out "$PRGNAM -- Version: $VERSION"
-        exit
-        ;;
-
-      *)
-        err "Invalid option: $_opts"
-        usage 1
-        ;;
+      4)  PUBLIC_IP_V4=1 ;;
+      6)  PUBLIC_IP_V6=1 ;;
+      h)  usage ;;
+      q)  if [ "$VERBOSE" -eq 1 ]; then
+            err "Cannot choose both 'q' and 'v'"
+            usage 1
+          fi
+          VERBOSE=-1 ;;
+      v)  if [ "$VERBOSE" -eq -1 ]; then
+            VERBOSE=1
+            err "Cannot choose both 'v' and 'q'"
+            usage 1
+          fi
+          VERBOSE=1 ;;
+      V)  out "$PRGNAM -- Version: $VERSION" ; exit ;;
+      *)  err "Invalid option: $_opts" ; usage 1 ;;
     esac
   done
 }
@@ -233,9 +393,8 @@ main() {
   # Parse args
   while [ "$#" -gt 0 ]; do
     case "$1" in
-      help | usage | check | show | update)
-        _commands="${_commands:-} $1"
-        shift ;;
+      help) usage 0 ;;
+      check | update) _commands="${_commands:-} $1" ; shift ;;
       -f) PUBLIC_IP_ADDRESS="$2"; shift 2 ;;
       -F) CONFFILE="$2"; shift 2 ;;
       -k) CF_API_KEY="$2"; shift 2 ;;
@@ -263,23 +422,43 @@ main() {
   if [ -n "$CONFFILE" ]; then
     parse_conf "$CONFFILE"
   fi
-  
-  # Exit if no zone defined
-  if [ -z "$CF_API_ZONE" ]; then
-    err "No zone set."
+
+  # Exit if no zone or domains defined
+  if [ -z "$CF_API_ZONE" ] && [ -z "$CF_DOMAINS" ]; then
+    err "No zone or domain specified."
     usage 1
   fi
   
-  # Exit if no domains given
-  if [ -z "$CF_DOMAINS" ]; then
-    err "No domains specified."
-    usage 1
+  # Assign zone to first domain if unset
+  if [ -z "$CF_API_ZONE" ]; then
+    for _first_domain in $CF_DOMAINS; do
+      inf "No zone specified, setting to $_first_domain..."
+      CF_API_ZONE="$_first_domain"
+      break
+    done
   fi
 
-  # Check API key
+  if [ -z "$CF_DOMAINS" ]; then
+    inf "No domain(s) specified, setting to $CF_API_ZONE"
+    CF_DOMAINS="$CF_API_ZONE"
+  fi
+
+  # Check API key exists
   if [ -z "$CF_API_KEY" ]; then
     err "Cloudflare API Key not defined."
     usage 1
+  fi
+  
+  # Verify Cloudflare API Key
+  _verify_api=""
+  if ! _verify_api=$(http_req \
+    --request GET \
+    --url "$CF_API_URL/user/tokens/verify" \
+    --header "Content-Type: application/json" \
+    --header "Authorization: Bearer $CF_API_KEY"); then
+    err "Cloudflare API not verified."
+    errinf "$_verify_api"
+    exit 1
   fi
 
   # Assemble public IP address list
@@ -293,154 +472,25 @@ main() {
         PUBLIC_API_URL="${PUBLIC_API_URL} $PUBLIC_IP_LIST_V4"
     fi
   fi
+
+  # Get public IP address
+  if [ -z "$PUBLIC_IP_ADDRESS" ]; then
+    if ! PUBLIC_IP_ADDRESS="$(get_public_ip)"; then
+      err "Cannot get public IP address."
+      errinf "$PUBLIC_IP_ADDRESS"
+      return 1
+    fi
+  fi
   
-  # Get public ip
-  if [ -z "$PUBLIC_IP_ADDRESS" ]; then
-    for _public_api in $PUBLIC_API_URL; do
-      if PUBLIC_IP_ADDRESS=$(http_req \
-        --request GET \
-        --url "$_public_api"); then
-        inf "Public IP $PUBLIC_IP_ADDRESS found via $_public_api"
-        break
-      else
-        err "Unable to get public ip address from $_public_api"
-        errinf "$PUBLIC_IP_ADDRESS"
-        PUBLIC_IP_ADDRESS=""
-      fi
+  # Process commands
+  if [ -n "$_commands" ]; then
+    for _cmd in $_commands; do
+      cmd_"${_cmd}"
     done
+  else
+    # default command
+    cmd_check
   fi
-
-  if [ -z "$PUBLIC_IP_ADDRESS" ]; then
-    die "Unable to get public ip address."
-  fi
-
-  # Verify API Key
-  _verify_api=""
-  if ! _verify_api=$(http_req \
-    --request GET \
-    --url "$CF_API_URL/user/tokens/verify" \
-    --header "Content-Type: application/json" \
-    --header "Authorization: Bearer $CF_API_KEY"); then
-    err "Cloudflare API not verified."
-    errinf "$_verify_api"
-    exit 1
-  fi
-
-  # Get Cloudflare Zones
-  _cf_zones=""
-  if ! _cf_zones=$(http_req \
-    --request GET \
-    --url "$CF_API_URL/zones" \
-    --header "Content-Type: application/json" \
-    --header "Authorization: Bearer $CF_API_KEY"); then
-    err "Unable to get DNS Zones"
-    errinf "$_cf_zones"
-    exit 1
-  fi
-
-  # Get Zone ID
-  if ! CF_ZONE_ID=$(out "$_cf_zones" | \
-    parse_json '.result[] | select(.name == "'"$CF_API_ZONE"'") | .id'); then
-    err "Cannot parse Zone JSON"
-    errinf "$_cf_zones"
-    exit 1
-  elif [ "$CF_ZONE_ID" = "null" ]; then
-    err "CF_ZONE_ID not found for $CF_API_ZONE."
-    errinf "$_cf_zones"
-    exit 1
-  fi
-
-  if [ -z "$CF_ZONE_ID" ]; then
-    die "Unable to get Zone ID for $CF_API_ZONE"
-  fi
-
-  # Check for domains in Zone ID and update records as needed
-  _retval=0
-  _domain=""
-  for _domain in $CF_DOMAINS; do
-    # Get DNS record JSON
-    _dns_records=""
-    if ! _dns_records=$(http_req \
-      --request GET \
-      --url "$CF_API_URL/zones/$CF_ZONE_ID/dns_records" \
-      --header "Content-Type: application/json" \
-      --header "Authorization: Bearer $CF_API_KEY"); then
-      err "Unable to get DNS records"
-      errinf "$_dns_records"
-      _retval=$((_retval+1))
-      continue
-    fi
-
-    # Parse DNS Records for domain ID
-    _dns_id=""
-    if ! _dns_id=$(out "$_dns_records" | \
-      parse_json '.result[] | select(.name == "'"$_domain"'") | .id'); then
-      err "Cannot parse DNS JSON."
-      errinf "$_dns_id"
-      _retval=$((_retval+1))
-      continue
-    elif [ "$_dns_id" = "null" ]; then
-      err "Cannot get DNS ID from DNS Records JSON."
-      errinf "$_dns_records"
-      _retval=$((_retval+1))
-      continue
-    fi
-
-    if [ -z "$_dns_id" ]; then
-      err "Cannot get DNS ID for $_domain"
-      _retval=$((_retval+1))
-      continue
-    fi
-
-    inf "DNS ID for $_domain: $_dns_id"
-
-    # Parse DNS records for domain IP address
-    _dns_ip=""
-    if ! _dns_ip=$(out "$_dns_records" | \
-      parse_json '.result[] | select(.id == "'"$_dns_id"'") | .content'); then
-      err "Cannot get IP address from DNS JSON."
-      errinfo "$_dns_records"
-      _retval=$((_retval+1))
-      continue
-    elif [ "$_dns_ip" = "null" ]; then
-      err "Cannot get DNS IP address from DNS Records JSON."
-      errinf "$_dns_records"
-      _retval=$((_retval+1))
-      continue
-    fi
-
-    if [ -z "$_dns_ip" ]; then
-      err "Unable to get DNS IP Address for $_domain"
-      _retval=$((_retval+1))
-      continue
-    fi
-
-    inf "DNS IP for $_domain: $_dns_ip"
-
-    # Check dns ip with public ip
-    if [ "$PUBLIC_IP_ADDRESS" = "$_dns_ip" ]; then
-      inf "$_domain is already set to $PUBLIC_IP_ADDRESS."
-      continue
-    fi
-
-    # Update dns ip
-    _update_dns_ip=""
-    if ! _update_dns_ip=$(http_req \
-      --request PATCH \
-      --url "$CF_API_URL/zones/$CF_ZONE_ID/dns_records/$_dns_id" \
-      --header "Content-Type: application/json" \
-      --header "Authorization: Bearer $CF_API_KEY" \
-      --data '{"content": "'"$PUBLIC_IP_ADDRESS"'"}'); then
-      err "Unable to patch $_domain with public ip $PUBLIC_IP_ADDRESS."
-      errinf "$_update_dns_ip"
-      _retval=$((_retval+1))
-      continue
-    fi
-
-    log "$_domain updated from $_dns_ip to $PUBLIC_IP_ADDRESS"
-
-  done
-  return "$_retval"
 }
 
 main "$@"
