@@ -27,6 +27,7 @@ PRGNAM=$(basename "$0")
 VERSION='0.0.42'
 
 ## CONFIGURATION LOCATIONS ##
+VERBOSE="${VERBOSE:-0}"
 CONFFILE="${CONFFILE:-}"
 CONFIG_FILE_LOCATIONS="
 $PWD/$PRGNAM.conf
@@ -41,12 +42,20 @@ CF_API_ZONE="${CF_API_ZONE:-}"
 CF_DOMAINS="${CF_DOMAINS:-}"
 CF_ZONE_ID="${CF_ZONE_ID:-}"
 PUBLIC_IP_ADDRESS="${PUBLIC_IP_ADDRESS:-}"
-PUBLIC_API_URL="
-https://ipv4.icanhazip.com
-https://ifconfig.me/ip
-https://api.ipify.org
-https://api.seeip.org"
-VERBOSE="${VERBOSE:-0}"
+PUBLIC_IP_V4="${PUBLIC_IP_V4:-}"
+PUBLIC_IP_V6="${PUBLIC_IP_V6:-}"
+
+PUBLIC_API_URL=""
+
+PUBLIC_IP_LIST_V4="
+https://ipv4.seeip.org
+https://api4.ipify.org
+https://ipv4.icanhazip.com"
+
+PUBLIC_IP_LIST_V6="
+https://ipv6.seeip.org
+https://api6.ipify.org
+https://ipv6.icanhazip.com"
 
 ## DEPENDENCIES ##
 CURL_BIN="${CURL_BIN:-$(command -v curl)}" || die "curl not found in PATH"
@@ -59,9 +68,12 @@ usage() {
 $PRGNAM -- Version: $VERSION
 
 USAGE
-$PRGNAM [-hqvV] [-F config] [-f address] [-k key] [-z zone] domains
+$PRGNAM [-46hqvV] [-F config] [-f address] [-k key] [-z zone] domains
 
 OPTIONS
+    -4              IPv4 Public Address (default)
+    -6              IPv6 Public Address
+                    (if 4 & 6 will attempt v6 and fallback on v4)
     -F  conffile    Read configuration options from conffile
                     (default: \$HOME/.config/$PRGNAM.conf)   
     -h              Show this screen
@@ -114,18 +126,18 @@ inf() {
 
 err() {
   if [ "$VERBOSE" -gt -1 ]; then
-    >&2 out "$*"
+    >&2 out "ERROR: $*"
   fi
 }
 
 errinf() {
   if [ "$VERBOSE" -gt 0 ]; then
-    >&2 out "$*"
+    >&2 printf "ERROR DETAILS:\n%s" "$*"
   fi
 }
 
 die() {
-  err "$*" ; exit "${1:-1}"
+  err "$*" ; exit 1
 }
 
 get_config_file() {
@@ -179,8 +191,10 @@ parse_json() {
 }
 
 parse_opts() {
-  while getopts :hqvV _opts; do
+  while getopts :46hqvV _opts; do
     case "$_opts" in
+      4) PUBLIC_IP_V4=1 ;;
+      6) PUBLIC_IP_V6=1 ;;
       h)
         usage
         ;;
@@ -234,7 +248,7 @@ main() {
   # Check for configuration file
   if [ -n "$CONFFILE" ]; then
     if [ ! -r "$CONFFILE" ]; then
-      die "Error: $CONFFILE not found."
+      die "$CONFFILE not found."
     fi
   fi
   
@@ -267,6 +281,18 @@ main() {
     err "Cloudflare API Key not defined."
     usage 1
   fi
+
+  # Assemble public IP address list
+  if [ -z "$PUBLIC_API_URL" ]; then
+    if [ -z "$PUBLIC_IP_V6" ] && [ -z "$PUBLIC_IP_V4" ]; then
+      PUBLIC_API_URL="$PUBLIC_IP_LIST_V4"
+    else
+      [ -n "$PUBLIC_IP_V6" ] && \
+        PUBLIC_API_URL="$PUBLIC_IP_LIST_V6"
+      [ -n "$PUBLIC_IP_V4" ] && \
+        PUBLIC_API_URL="${PUBLIC_API_URL} $PUBLIC_IP_LIST_V4"
+    fi
+  fi
   
   # Get public ip
   if [ -z "$PUBLIC_IP_ADDRESS" ]; then
@@ -278,7 +304,7 @@ main() {
         break
       else
         err "Unable to get public ip address from $_public_api"
-        errinf "$PUBLIC_IP"
+        errinf "$PUBLIC_IP_ADDRESS"
         PUBLIC_IP_ADDRESS=""
       fi
     done
@@ -315,11 +341,11 @@ main() {
   # Get Zone ID
   if ! CF_ZONE_ID=$(out "$_cf_zones" | \
     parse_json '.result[] | select(.name == "'"$CF_API_ZONE"'") | .id'); then
-    err "Error parsing Zone JSON"
+    err "Cannot parse Zone JSON"
     errinf "$_cf_zones"
     exit 1
   elif [ "$CF_ZONE_ID" = "null" ]; then
-    err "Error: CF_ZONE_ID not found for $CF_API_ZONE."
+    err "CF_ZONE_ID not found for $CF_API_ZONE."
     errinf "$_cf_zones"
     exit 1
   fi
@@ -349,19 +375,19 @@ main() {
     _dns_id=""
     if ! _dns_id=$(out "$_dns_records" | \
       parse_json '.result[] | select(.name == "'"$_domain"'") | .id'); then
-      err "Error parsing DNS JSON."
+      err "Cannot parse DNS JSON."
       errinf "$_dns_id"
       _retval=$((_retval+1))
       continue
     elif [ "$_dns_id" = "null" ]; then
-      err "Error getting DNS ID from DNS Records JSON."
+      err "Cannot get DNS ID from DNS Records JSON."
       errinf "$_dns_records"
       _retval=$((_retval+1))
       continue
     fi
 
     if [ -z "$_dns_id" ]; then
-      err "Unable to get DNS ID for $_domain"
+      err "Cannot get DNS ID for $_domain"
       _retval=$((_retval+1))
       continue
     fi
@@ -372,12 +398,12 @@ main() {
     _dns_ip=""
     if ! _dns_ip=$(out "$_dns_records" | \
       parse_json '.result[] | select(.id == "'"$_dns_id"'") | .content'); then
-      err "Error getting IP address from DNS JSON."
+      err "Cannot get IP address from DNS JSON."
       errinfo "$_dns_records"
       _retval=$((_retval+1))
       continue
     elif [ "$_dns_ip" = "null" ]; then
-      err "Error getting DNS IP address from DNS Records JSON."
+      err "Cannot get DNS IP address from DNS Records JSON."
       errinf "$_dns_records"
       _retval=$((_retval+1))
       continue
