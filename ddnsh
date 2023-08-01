@@ -59,10 +59,6 @@ https://api6.ipify.org
 https://ipv6.icanhazip.com"
 VERBOSE="${VERBOSE:-0}"
 
-## DEPENDENCIES ##
-CURL_BIN="${CURL_BIN:-$(command -v curl)}" || die "curl not found in PATH"
-JQ_BIN="${JQ_BIN:-$(command -v jq)}" || die "jq not found in PATH"
-
 ## FUNCTIONS ##
 usage() {
   if [ "$VERBOSE" -gt -1 ]; then
@@ -202,8 +198,9 @@ get_public_ip() {
 }
 
 http_req(){
+  curl_bin="$(command -v curl)" || die "curl not found in PATH"
   _response=$(mktemp 2>&1) || die "$_response"
-  if ! _ret=$("$CURL_BIN" -sS \
+  if ! _ret=$("$curl_bin" -sS \
     -o "$_response" \
     -w '%{http_code}' \
     "$@" 2>&1); then
@@ -237,7 +234,8 @@ parse_conf() {
 }
 
 parse_json() {
-  "$JQ_BIN" -r "$@"
+  jq_bin="${jq_bin:-$(command -v jq)}" || die "jq not found in PATH"
+  "$jq_bin" -r "$@"
 }
 
 cmd_check() {
