@@ -225,7 +225,7 @@ parse_conf() {
     case "$_line" in
       \#*) continue ;;
              cf_domains=*) cf_domains=${cf_domains:=${_line#*=}}          ;;
-             cf_api_token=*) cf_api_token=${cf_api_token:=${_line#*=}}          ;;
+           cf_api_token=*) cf_api_token=${cf_api_token:=${_line#*=}}      ;;
              cf_api_url=*) cf_api_url=${cf_api_url:=${_line#*=}}          ;;
             cf_api_zone=*) cf_api_zone=${cf_api_zone:=${_line#*=}}        ;;
          public_api_url=*) public_api_url=${public_api_url:=${_line#*=}}  ;;
