@@ -365,25 +365,16 @@ cmd_update() {
   return "$_retval"
 }
 
-parse_opts() {
-  while getopts :46hqvV _opts; do
-    case "$_opts" in
+parse_flags() {
+  while getopts :46hqvV _flags; do
+    case "$_flags" in
       4)  public_ip_v4=1 ;;
       6)  public_ip_v6=1 ;;
       h)  usage ;;
-      q)  if [ "$verbose" -eq 1 ]; then
-            err "Cannot choose both 'q' and 'v'"
-            return 1
-          fi
-          verbose=-1 ;;
-      v)  if [ "$verbose" -eq -1 ]; then
-            verbose=1
-            err "Cannot choose both 'v' and 'q'"
-            return 1
-          fi
-          verbose=1 ;;
+      q)  verbose=-1 ;;
+      v)  verbose=1  ;;
       V)  out "$Prgnam -- Version: $Version" ; exit ;;
-      *)  err "Invalid option: $_opts" ; return 1 ;;
+      *)  err "Invalid option: $_flags" ; return 1 ;;
     esac
   done
 }
@@ -399,7 +390,7 @@ main() {
       -F) conffile="$2"; shift 2 ;;
       -T) cf_api_token="$2"; shift 2 ;;
       -z) cf_api_zone="$2"; shift 2 ;;
-      -*) parse_opts "$1" || usage 1 ; shift ;;
+      -*) parse_flags "$1" || usage 1 ; shift ;;
        *) cf_domains="${cf_domains:-} $1"; shift ;;
      esac
   done
