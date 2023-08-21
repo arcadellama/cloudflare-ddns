@@ -197,7 +197,7 @@ get_public_ip() {
   return 1
 }
 
-http_req(){
+http_curl() {
   curl_bin="$(command -v curl)" || die "curl not found in PATH"
   _response=$(mktemp 2>&1) || die "$_response"
   if ! _ret=$("$curl_bin" -sS \
@@ -216,6 +216,62 @@ http_req(){
 
   cat "$_response"
   rm -rf "$_response"
+}
+
+parse_wget_server_response() {
+  while read -r _m _r _; do
+    case "$_m" in
+      HTTP/1.?) out "$_r" ;;
+      *) continue ;;
+    esac
+  done <<EOF
+$(out "$1")"
+EOF
+}
+
+http_wget() {
+  wget_bin="$(command -v wget)" || die "wget not found in PATH"
+  _response=$(mktemp 2>&1) || die "$_response"
+  _url=""
+
+  _count="$#"
+  while [ "$_count" -gt 0 ]; do
+    case "$1" in
+      --request) set -- "$@" --method "$2" ; shift 2 ; _count=$((_count-2));;
+      --header) set -- "$@" "$1" "$2" ; shift 2 ; _count=$((_count-2));;
+        --data) set -- "$@" --body-data "$2" ; shift 2 ; _count=$((_count-2));;
+         --url) _url="$2" ; shift 2 ; _count=$((_count-2));;
+             *) set -- "$@" "$1" ; shift ; _count=$((_count0));;
+    esac
+  done
+
+  if ! _ret=$("$wget_bin" -S \
+    -O "$_response" \
+    "$@" "$_url" 2>&1); then
+    out "$_ret"
+    return 1
+  fi
+
+  _ret="$(parse_wget_server_response "$_ret")"
+
+  if [ "$_ret" -ge 400 ]; then
+    out "HTTP Error Code: $_ret"
+    out "$(cat "$_response")"
+    return 1
+  fi
+
+  cat "$_response"
+  rm -rf "$_response"
+}
+
+http_req() {
+  if command -v wget >/dev/null 2>&1; then
+    http_wget "$@"
+  elif command -v curl >/dev/null 2>&1; then
+    http_curl "$@"
+  else
+    die "Neither curl nor wget found."
+  fi
 }
 
 parse_conf() {
