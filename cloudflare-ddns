@@ -1,0 +1,549 @@
+#!/usr/bin/env sh
+#
+# MIT License
+# 
+# Copyright (c) 2023 Justin Teague
+# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal 
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+# 
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+# 
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
+LC_ALL=C
+
+## PROGRAM CONSANTS ##
+Prgnam='ddnsh'
+Version='0.0.42'
+Cloudflare_v4_API="https://api.cloudflare.com/client/v4"
+
+## CONFIGURATION LOCATIONS ##
+conffile="${conffile:-}"
+conffile_locations="
+$PWD/$Prgnam.conf
+$PWD/.$Prgnam.conf
+$HOME/$Prgnam.conf
+$HOME/.$Prgnam.conf
+$HOME/.config/$Prgnam.conf
+$HOME/.local/etc/$Prgnam.conf
+/usr/local/etc/$Prgnam.conf
+/etc/$Prgnam.conf"
+
+## CONFIGURATION VARIABLES ##
+cf_api_token="${cf_api_token:-}"
+cf_api_url="${cf_api_url:-$Cloudflare_v4_API}"
+cf_api_zone="${cf_api_zone:-}"
+cf_domains="${cf_domains:-}"
+public_ip_address="${public_ip_address:-}"
+public_ip_v4="${public_ip_v4:-}"
+public_ip_v6="${public_ip_v6:-}"
+public_api_url="${public_api_url:-}"
+Public_IP_List_v4="
+https://ipv4.seeip.org
+https://api4.ipify.org
+https://ipv4.icanhazip.com"
+Public_IP_List_v6="
+https://ipv6.seeip.org
+https://api6.ipify.org
+https://ipv6.icanhazip.com"
+verbose="${verbose:-0}"
+
+## FUNCTIONS ##
+usage() {
+  if [ "$verbose" -gt -1 ]; then
+  cat << EOF
+$Prgnam -- Version: $Version
+
+USAGE
+$Prgnam [-46hqv] [-F config] [-f address] [-T token] [-z zone] command domains
+
+COMMANDS
+    check           Check if domain(s) match public IP address (Default)
+    help            This message
+    update          Update domain(s) to match public IP address
+
+OPTIONS
+    -4              IPv4 Public Address (Default)
+    -6              IPv6 Public Address
+                    (if 4 & 6 will attempt v6 and fallback on v4)
+    -F  conffile    Read configuration options from conffile
+                    (default: \$HOME/.config/$Prgnam.conf)   
+    -h              Show this screen
+    -f  address     Force public IP address to update      
+    -T  token       Cloudflare API Token
+    -q              Quiet mode
+    -v              Verbose mode
+    -z              Cloudflare DNS Zone
+
+CONFIGURATION VARIABLES
+
+  cf_api_token        Cloudflare API Key for Zone
+  cf_api_zone       Pre-defined Cloudflare DNS Zone
+  cf_domains        Domain(s) to update
+  public_api_url    API to get public IP address
+  verbose           Verbosity: 0 or 1
+
+CONFIGURATION LOCATIONS
+  ./$Prgnam.conf
+  \$HOME/$Prgnam.conf
+  \$HOME/.$Prgnam.conf
+  \$HOME/.config/$Prgnam.conf
+  \$HOME/.local/etc/$Prgnam.conf
+  /usr/local/etc/$Prgnam.conf
+  /usr/etc/$Prgnam.conf
+  
+EOF
+  fi
+  exit "${1:-0}" 
+}
+
+out() {
+  printf %s\\n "$*"
+}
+
+log() {
+  if [ "$verbose" -gt -1 ]; then
+    out "$*"
+  fi
+}
+
+inf() {
+  if [ "$verbose" -gt 0 ]; then
+    >&2 out "$*"
+  fi
+}
+
+err() {
+  if [ "$verbose" -gt -1 ]; then
+    >&2 out "ERROR: $*"
+  fi
+}
+
+errinf() {
+  if [ "$verbose" -gt 0 ]; then
+    >&2 out "ERROR: $*"
+  fi
+}
+
+die() {
+  err "$*" ; exit 1
+}
+
+get_cf_zone_json() {
+  # Returns: Cloudflare Zones JSON
+  if ! _zone_res=$(http_req \
+    --request GET \
+    --url "$cf_api_url/zones" \
+    --header "Content-Type: application/json" \
+    --header "Authorization: Bearer $cf_api_token"); then
+    out "$_zone_res"
+    return 1
+  fi
+  out "$_zone_res"
+}
+
+get_cf_zone_id() {
+  # Accepts: Zone JSON
+  # Returns: Zone ID matching cf_api_zone
+  if ! _zone_id=$(out "$1" | \
+    parse_json \
+    '.result[] | select(.name == "'"$cf_api_zone"'") | .id' 2>&1); then
+    out "$_zone_id"
+    return 1
+  elif [ "$_zone_id" = "null" ]; then
+    out "$_zone_id"
+    return 1
+  fi
+  out "$_zone_id"
+}
+
+get_config_file() {
+  for _file in $conffile_locations; do
+    if [ -r "$_file" ]; then
+      out "$_file"
+      return
+    fi
+  done
+  return 1
+}
+
+get_public_ip() {
+  # Returns: Public IP Address
+  for _public_api in $public_api_url; do
+    _addr=""
+    if _addr=$(http_req \
+      --request GET \
+      --url "$_public_api"); then
+      inf "Public IP $_addr found at $_public_api"
+      out "$_addr"
+      return 
+    else
+      errinf "Unable to get public ip address from $_public_api"
+    fi
+  done
+  out "Failed to get public IP address. Check connection."
+  return 1
+}
+
+http_curl() {
+  curl_bin="$(command -v curl)" || die "curl not found in PATH"
+  _response=$(mktemp 2>&1) || die "$_response"
+  if ! _ret=$("$curl_bin" -sS \
+    -o "$_response" \
+    -w '%{http_code}' \
+    "$@" 2>&1); then
+    out "$_ret"
+    return 1
+  fi
+
+  if [ "$_ret" -ge 400 ]; then
+    out "HTTP Error Code: $_ret"
+    out "$(cat "$_response")"
+    return 1
+  fi
+
+  cat "$_response"
+  rm -rf "$_response"
+}
+
+parse_wget_server_response() {
+  while read -r _m _r _; do
+    case "$_m" in
+      HTTP/1.?) out "$_r" ;;
+      *) continue ;;
+    esac
+  done <<EOF
+$(out "$1")"
+EOF
+}
+
+http_wget() {
+  wget_bin="$(command -v wget)" || die "wget not found in PATH"
+  _response=$(mktemp 2>&1) || die "$_response"
+  _url=""
+
+  _count="$#"
+  while [ "$_count" -gt 0 ]; do
+    case "$1" in
+      --request) set -- "$@" --method "$2" ; shift 2 ; _count=$((_count-2));;
+      --header) set -- "$@" "$1" "$2" ; shift 2 ; _count=$((_count-2));;
+        --data) set -- "$@" --body-data "$2" ; shift 2 ; _count=$((_count-2));;
+         --url) _url="$2" ; shift 2 ; _count=$((_count-2));;
+             *) set -- "$@" "$1" ; shift ; _count=$((_count0));;
+    esac
+  done
+
+  if ! _ret=$("$wget_bin" -S \
+    -O "$_response" \
+    "$@" "$_url" 2>&1); then
+    out "$_ret"
+    return 1
+  fi
+
+  _ret="$(parse_wget_server_response "$_ret")"
+
+  if [ "$_ret" -ge 400 ]; then
+    out "HTTP Error Code: $_ret"
+    out "$(cat "$_response")"
+    return 1
+  fi
+
+  cat "$_response"
+  rm -rf "$_response"
+}
+
+http_req() {
+  if command -v wget >/dev/null 2>&1; then
+    http_wget "$@"
+  elif command -v curl >/dev/null 2>&1; then
+    http_curl "$@"
+  else
+    die "Neither curl nor wget found."
+  fi
+}
+
+parse_conf() {
+  # Accepts: conffile
+  if [ ! -r "$1" ]; then err "$1 not a readable file"; return 1; fi
+  while read -r _line; do
+    case "$_line" in
+      \#*) continue ;;
+             cf_domains=*) cf_domains=${cf_domains:=${_line#*=}}          ;;
+           cf_api_token=*) cf_api_token=${cf_api_token:=${_line#*=}}      ;;
+             cf_api_url=*) cf_api_url=${cf_api_url:=${_line#*=}}          ;;
+            cf_api_zone=*) cf_api_zone=${cf_api_zone:=${_line#*=}}        ;;
+         public_api_url=*) public_api_url=${public_api_url:=${_line#*=}}  ;;
+    esac
+  done < "$1"
+}
+
+parse_json() {
+  jq_bin="${jq_bin:-$(command -v jq)}" || die "jq not found in PATH"
+  "$jq_bin" -r "$@"
+}
+
+cmd_check() {
+  cmd_update --check-only
+}
+
+cmd_update() {
+  _check_only=""
+  case "$1" in --check-only) _check_only=1 ;; esac
+  
+  # Get Zone JSON
+  if ! _cf_zone_json=$(get_cf_zone_json); then
+    err "API Error getting Cloudflare Zones"
+    errinf "$_cf_zone_json"
+    return 1
+  elif [ -z "$_cf_zone_json" ]; then
+    die "Unable to get ZONE JSON for $cf_api_zone"
+  fi
+
+  # Get Zone ID matching cf_api_zone
+  _cf_zone_id=""
+  if ! _cf_zone_id="$(get_cf_zone_id "$_cf_zone_json")"; then
+    err "No matching Zone ID for $cf_api_zone"
+    errinf "$_cf_zone_id"
+    return 1
+  elif [ -z "$_cf_zone_id" ]; then
+    die "Unable to get Zone ID for $cf_api_zone"
+  fi
+
+  # Check for domains in Zone ID and update records as needed
+  _retval=0
+  _domain=""
+  for _domain in $cf_domains; do
+    # Get DNS record JSON
+    _dns_records=""
+    if ! _dns_records=$(http_req \
+      --request GET \
+      --url "$cf_api_url/zones/$_cf_zone_id/dns_records" \
+      --header "Content-Type: application/json" \
+      --header "Authorization: Bearer $cf_api_token"); then
+      err "Unable to get DNS records"
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    # Parse DNS Records for domain ID
+    _dns_id=""
+    if ! _dns_id=$(out "$_dns_records" | \
+      parse_json \
+      '.result[] | select(.name == "'"$_domain"'") | .id' 2>&1); then
+      err "Cannot parse DNS JSON."
+      errinf "$_dns_id"
+      _retval=$((_retval+1))
+      continue
+    elif [ "$_dns_id" = "null" ]; then
+      err "Cannot get DNS ID from DNS Records JSON."
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    if [ -z "$_dns_id" ]; then
+      err "Cannot get DNS ID for $_domain"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    inf "DNS ID for $_domain: $_dns_id"
+
+    # Parse DNS records for domain IP address
+    _dns_ip=""
+    if ! _dns_ip=$(out "$_dns_records" | \
+      parse_json \
+      '.result[] | select(.id == "'"$_dns_id"'") | .content' 2>&1); then
+      err "Cannot get IP address from DNS JSON."
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    elif [ "$_dns_ip" = "null" ]; then
+      err "Cannot get DNS IP address from DNS Records JSON."
+      errinf "$_dns_records"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    if [ -z "$_dns_ip" ]; then
+      err "Unable to get DNS IP Address for $_domain"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    inf "DNS IP for $_domain: $_dns_ip"
+
+    # Check dns ip with public ip
+    if [ "$public_ip_address" = "$_dns_ip" ]; then
+
+      if [ -n "$_check_only" ]; then
+        log "$_domain is already set to $public_ip_address."
+      else
+        inf "$_domain is already set to $public_ip_address."
+      fi
+      continue
+
+    elif [ -n "$_check_only" ]; then
+      log "$_domain ($_dns_ip) is not set to public ip ($public_ip_address)"
+      continue
+    fi
+
+    # Update dns ip
+    _update_dns_ip=""
+    if ! _update_dns_ip=$(http_req \
+      --request PATCH \
+      --url "$cf_api_url/zones/$_cf_zone_id/dns_records/$_dns_id" \
+      --header "Content-Type: application/json" \
+      --header "Authorization: Bearer $cf_api_token" \
+      --data '{"content": "'"$public_ip_address"'"}'); then
+      err "Unable to patch $_domain with public ip $public_ip_address."
+      errinf "$_update_dns_ip"
+      _retval=$((_retval+1))
+      continue
+    fi
+
+    log "$_domain updated from $_dns_ip to $public_ip_address"
+
+  done
+  return "$_retval"
+}
+
+parse_flags() {
+  while getopts :46hqvV _flags; do
+    case "$_flags" in
+      4)  public_ip_v4=1 ;;
+      6)  public_ip_v6=1 ;;
+      h)  usage ;;
+      q)  verbose=-1 ;;
+      v)  verbose=1  ;;
+      V)  out "$Prgnam -- Version: $Version" ; exit ;;
+      *)  err "Invalid option: $_flags" ; return 1 ;;
+    esac
+  done
+}
+
+main() {
+  _commands=""
+  # Parse args
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      help) usage 0 ;;
+      check | update) _commands="${_commands:-} $1" ; shift ;;
+      -f) public_ip_address="$2"; shift 2 ;;
+      -F) conffile="$2"; shift 2 ;;
+      -T) cf_api_token="$2"; shift 2 ;;
+      -z) cf_api_zone="$2"; shift 2 ;;
+      -*) parse_flags "$1" || usage 1 ; shift ;;
+       *) cf_domains="${cf_domains:-} $1"; shift ;;
+     esac
+  done
+
+  # Check stdin for cf_domains
+  if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then
+    cf_domains="${cf_domains:-} $(cat)"
+  fi
+ 
+  # Check for configuration file
+  if [ -n "$conffile" ]; then
+    if [ ! -r "$conffile" ]; then
+      die "$conffile not found."
+    fi
+  fi
+  
+  # Check for configuration if API not specified
+  if [ -z "$conffile" ]; then
+    if ! conffile=$(get_config_file); then
+      conffile=""
+    fi
+  fi
+
+  # Parse configuration
+  if [ -n "$conffile" ]; then
+    parse_conf "$conffile"
+  fi
+
+  # Exit if no zone or domains defined
+  if [ -z "$cf_api_zone" ] && [ -z "$cf_domains" ]; then
+    err "No zone or domain specified."
+    usage 1
+  fi
+  
+  # Assign zone to first domain if unset
+  if [ -z "$cf_api_zone" ]; then
+    for _first_domain in $cf_domains; do
+      inf "No zone specified, setting to $_first_domain..."
+      cf_api_zone="$_first_domain"
+      break
+    done
+  fi
+
+  # Assign cf_domains to zone if unset
+  if [ -z "$cf_domains" ]; then
+    inf "No domain(s) specified, setting to $cf_api_zone"
+    cf_domains="$cf_api_zone"
+  fi
+
+  # Check API key exists
+  if [ -z "$cf_api_token" ]; then
+    err "Cloudflare API Key not defined."
+    usage 1
+  fi
+  
+  # Verify Cloudflare API Key
+  _verify_api=""
+  if ! _verify_api=$(http_req \
+    --request GET \
+    --url "$cf_api_url/user/tokens/verify" \
+    --header "Content-Type: application/json" \
+    --header "Authorization: Bearer $cf_api_token"); then
+    err "Cloudflare API not verified."
+    errinf "$_verify_api"
+    exit 1
+  fi
+
+  # Assemble public IP address list
+  if [ -z "$public_api_url" ]; then
+    if [ -z "$public_ip_v6" ] && [ -z "$public_ip_v4" ]; then
+      public_api_url="$Public_IP_List_v4"
+    else
+      [ -n "$public_ip_v6" ] && \
+        public_api_url="$Public_IP_List_v6"
+      [ -n "$public_ip_v4" ] && \
+        public_api_url="${public_api_url} $Public_IP_List_v4"
+    fi
+  fi
+
+  # Get public IP address
+  if [ -z "$public_ip_address" ]; then
+    if ! public_ip_address="$(get_public_ip)"; then
+      err "Cannot get public IP address."
+      errinf "$public_ip_address"
+      return 1
+    fi
+  fi
+  
+  # Process commands
+  if [ -n "$_commands" ]; then
+    for _cmd in $_commands; do
+      cmd_"${_cmd}"
+    done
+  else
+    # default command
+    cmd_check
+  fi
+}
+
+main "$@"
