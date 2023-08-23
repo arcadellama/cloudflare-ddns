@@ -67,17 +67,18 @@ usage() {
 $Prgnam -- Version: $Version
 
 USAGE
-$Prgnam [-46hqv] [-F config] [-f address] [-T token] [-z zone] command domains
+$Prgnam [-46hqv] [-d domain] [-f conf] [-i addr] [-T token] [-z zone] <command>
 
 COMMANDS
     check           Check if domain(s) match public IP address (Default)
-    help            This message
+    help            Usage
     update          Update domain(s) to match public IP address
 
 OPTIONS
     -4              IPv4 Public Address (Default)
     -6              IPv6 Public Address
                     (if 4 & 6 will attempt v6 and fallback on v4)
+    -d  domain      Domain to be updated
     -F  conffile    Read configuration options from conffile
                     (default: \$HOME/.config/$Prgnam.conf)   
     -h              Show this screen
@@ -85,11 +86,12 @@ OPTIONS
     -T  token       Cloudflare API Token
     -q              Quiet mode
     -v              Verbose mode
-    -z              Cloudflare DNS Zone
+    -z  zone        Cloudflare DNS Zone
+                    (Will attempt to derive zone from the domain if unspecified)
 
 CONFIGURATION VARIABLES
 
-  cf_api_token        Cloudflare API Key for Zone
+  cf_api_token      Cloudflare API Key for Zone
   cf_api_zone       Pre-defined Cloudflare DNS Zone
   cf_domains        Domain(s) to update
   public_api_url    API to get public IP address
@@ -442,8 +444,9 @@ main() {
     case "$1" in
       help) usage 0 ;;
       check | update) _commands="${_commands:-} $1" ; shift ;;
-      -f) public_ip_address="$2"; shift 2 ;;
-      -F) conffile="$2"; shift 2 ;;
+      -d) cf_domains="${cf_domains:-} $2"; shift 2 ;;
+      -f) conffile="$2"; shift 2 ;;
+      -i) public_ip_address="$2"; shift 2 ;;
       -T) cf_api_token="$2"; shift 2 ;;
       -z) cf_api_zone="$2"; shift 2 ;;
       -*) parse_flags "$1" || usage 1 ; shift ;;
@@ -451,11 +454,6 @@ main() {
      esac
   done
 
-  # Check stdin for cf_domains
-  if [ -p /dev/stdin ] || [ -f /dev/stdin ]; then
-    cf_domains="${cf_domains:-} $(cat)"
-  fi
- 
   # Check for configuration file
   if [ -n "$conffile" ]; then
     if [ ! -r "$conffile" ]; then
